@@ -25,7 +25,7 @@ introduced remain marked **Legacy**.
 ## Related repositories
 
 - [Backend](https://github.com/1942ILSX/no-warthunder-backend): Go simulation,
-  REST/WebSocket API, leaderboard persistence, and the three qualified model
+  HTTP/3, WebTransport/WebSocket API, leaderboard persistence, and the three qualified model
   artifacts. No Python runtime is needed to play.
 - [AI training](https://github.com/1942ILSX/no-warthunder-ai): offline training,
   evaluation, and model export. Training does not require a human opponent.
@@ -81,6 +81,33 @@ local environment files, and IDE files are excluded from Git.
 The tests cover input handling, ID validation, localization, error mapping,
 difficulty preferences, and the room API contract. They do not replace browser
 playtesting of controls or level design.
+
+## Production transport and asset delivery
+
+On HTTPS the client tries WebTransport when the room advertises
+`webTransportPath`. It falls back to WebSocket if WebTransport is unavailable
+or fails before sending `join`, reusing the same room reservation. A failure
+after `join` ends the run; automatic mid-game resume is not implemented.
+Local HTTP development continues to use WebSocket.
+
+The production build contains an origin-hosted bootstrap. It fetches
+`/api/client-config`, which supplies `assetBaseURL` (the complete HTTPS CDN
+release prefix) and configurable `originAssetRatio` (default `0.1`). For example,
+a ratio of `0.1` assigns 10% of browser tab sessions to origin and 90% to CDN.
+A random draw saved in sessionStorage keeps the choice stable across reloads
+and multiple game rooms. This is a session ratio, not an exact bandwidth ratio.
+
+Publish the same `dist/` files at the origin root and beneath the CDN release
+prefix. Relative module and font URLs keep each asset group on its chosen
+origin. The bootstrap loads no eager module, stylesheet, or font before
+selection. CDN preflight or stylesheet failure falls back to origin and
+remembers that failure for this release and session. Module evaluation is
+never raced against a second application import.
+
+HTML and `/api/client-config` require `Cache-Control: no-store` or revalidation.
+Versioned CDN files and hashed origin assets can use immutable caching. The CDN
+must allow cross-origin GET requests from the game origin for modules and fonts.
+`asset-manifest.json` lists the entry module and CSS files for deployment checks.
 
 ## License
 

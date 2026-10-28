@@ -21,3 +21,6 @@ yarn-error.log*
 .env.*
 !.env.example
 coverage/
+
+# Private deployment configuration stays local.
+/deploy/

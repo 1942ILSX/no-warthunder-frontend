@@ -2,7 +2,7 @@
 export type Difficulty = 'trainee' | 'expert' | 'ace';
 export type DifficultyProfile = { id: Difficulty; scoreMultiplier: number };
 export type RunDifficulty = { difficulty: Difficulty; scoreMultiplier: number; policyVersion: string };
-export type RoomReservation = RunDifficulty & { roomId: string; token: string; wsUrl: string };
+export type RoomReservation = RunDifficulty & { roomId: string; token: string; wsUrl: string; webTransportPath?: string };
 export type Point = { x: number; y: number };
 export type Level = {
   id: number; name: string; subtitle: string; description: string;
@@ -35,6 +35,6 @@ export type ScoreRecord = {
 export type ServerMessage =
   | (RunDifficulty & { type: 'welcome'; roomId: string; level: Level; state: State })
   | { type: 'state'; state: State }
-  | { type: 'finished'; result: RunResult }
+  | { type: 'finished'; result: RunResult; state?: State }
   | { type: 'error'; error: string };
 export type Input = { type: 'input'; seq: number; move: number; fire: boolean };

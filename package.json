@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/build-bootstrap.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "preview": "vite preview --host 127.0.0.1"

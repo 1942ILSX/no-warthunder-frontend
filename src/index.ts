@@ -1,5 +1,7 @@
 import './styles.css';
 import { api, LocalizedError, serverError } from './api';
+import { connectGame } from './transport';
+import type { GameConnection } from './transport';
 import { applyTranslations, getLocale, normalizeLocale, setLocale, t, updateDocumentLanguage } from './i18n';
 import type { MessageKey, Params } from './i18n';
 import { AudioEngine } from './audio';
@@ -7,7 +9,7 @@ import { drawMinimap, GameRenderer } from './renderer';
 import { InputState } from './input';
 import { normalizePlayerID } from './validation';
 import { difficultyStorageKey, isDifficulty, multiplierText, resolveDifficulty } from './difficulty';
-import type { Difficulty, DifficultyProfile, RunDifficulty, Input, Level, RunResult, ScoreRecord, ServerMessage, State } from './types';
+import type { Difficulty, DifficultyProfile, RunDifficulty, Input, Level, RunResult, ScoreRecord, State } from './types';
 import { shell, icon, escapeHTML, languageSelect } from './shell';
 
 const number = (n: number) => new Intl.NumberFormat('en-US').format(n);
@@ -30,10 +32,9 @@ class BattleCity {
   private difficulty: Difficulty = 'expert';
   private leaderboardRequest = 0;
   private generation = 0;
-  private socket?: WebSocket;
+  private connection?: GameConnection;
   private renderer?: GameRenderer;
   private interval?: number;
-  private handshakeTimeout?: number;
   private seq = 0;
   private controls = new InputState();
   private lastInput = '';
@@ -208,29 +209,29 @@ class BattleCity {
       const room = await api.room(level.id, selectedProfile.id);
       if (generation !== this.generation || !this.inGame) return;
       this.showRunDifficulty(room);
-      const url = new URL(room.wsUrl, location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(url); this.socket = socket;
-      this.handshakeTimeout = window.setTimeout(() => { if (generation === this.generation && !this.state) this.connectionError(new LocalizedError('error.connectionTimeout')); }, 12_000);
-      socket.addEventListener('message', event => {
-        if (generation !== this.generation) return;
-        try {
-          const message = JSON.parse(event.data) as ServerMessage;
-          if (message.type === 'welcome') {
-            this.showRunDifficulty(message);
-            window.clearTimeout(this.handshakeTimeout); this.el('arena-loading').hidden = true;
-            this.el('game-connection').innerHTML = `<i></i> ${l('game.live')}`; this.el('game-connection').classList.add('online');
-            this.acceptState(message.state); this.focusGame(); this.interval = window.setInterval(() => this.sendInput(), 50);
-          } else if (message.type === 'state') this.acceptState(message.state);
-          else if (message.type === 'finished') this.finished(message.result);
-          else if (message.type === 'error') this.connectionError(serverError(503, message));
-        } catch { this.connectionError(new LocalizedError('error.invalidUpdate')); }
+      this.connection = connectGame(room, {
+        message: message => {
+          if (generation !== this.generation) return;
+          try {
+            if (message.type === 'welcome') {
+              this.showRunDifficulty(message);
+              this.el('arena-loading').hidden = true;
+              this.el('game-connection').innerHTML = `<i></i> ${l('game.live')}`; this.el('game-connection').classList.add('online');
+              this.acceptState(message.state); this.focusGame(); this.interval = window.setInterval(() => this.sendInput(), 50);
+            } else if (message.type === 'state') this.acceptState(message.state);
+            else if (message.type === 'finished') {
+              if (message.state) this.acceptState(message.state);
+              this.finished(message.result);
+            }
+            else if (message.type === 'error') this.connectionError(serverError(503, message));
+          } catch { this.connectionError(new LocalizedError('error.invalidUpdate')); }
+        },
+        error: error => { if (generation === this.generation && this.inGame && !this.result) this.connectionError(error); },
       });
-      socket.addEventListener('close', () => { if (generation === this.generation && this.inGame && !this.result) this.connectionError(new LocalizedError('error.disconnected')); });
-      socket.addEventListener('error', () => { if (generation === this.generation && this.inGame && !this.result) this.connectionError(new LocalizedError('error.connection')); });
     } catch (error) { if (generation === this.generation) this.connectionError(error); }
   }
   private acceptState(state: State) {
-    if (this.result) return;
+    if (this.result || (this.state && state.tick < this.state.tick)) return;
     if (this.state && (state.kills > this.state.kills || state.lives < this.state.lives)) this.audio.play('hit');
     const newest = Math.max(-1, ...(state.bullets || []).filter(bullet => bullet.owner === 'player').map(bullet => bullet.id));
     if (newest > this.lastBullet && this.state) this.audio.play('shoot');
@@ -244,11 +245,11 @@ class BattleCity {
     return this.controls.read();
   }
   private sendInput(force = false) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.state || this.result || this.state.status !== 'playing') return;
+    if (!this.connection?.open || !this.state || this.result || this.state.status !== 'playing') return;
     const input = this.currentInput(); const signature = `${input.move}:${input.fire}`;
     if (force && signature === this.lastInput) return;
     this.lastInput = signature; this.renderer?.setInput(input.move);
-    this.socket.send(JSON.stringify({ type: 'input', seq: ++this.seq, ...input } satisfies Input));
+    this.connection.send({ type: 'input', seq: ++this.seq, ...input } satisfies Input);
   }
   private clearInput() {
     this.controls.clear(); document.querySelectorAll('.pressed').forEach(button => button.classList.remove('pressed')); this.sendInput(true);
@@ -302,8 +303,8 @@ class BattleCity {
     requestAnimationFrame(() => this.el('missions').scrollIntoView({ behavior: 'instant' }));
   }
   private cleanup() {
-    this.clearInput(); ++this.generation; window.clearInterval(this.interval); window.clearTimeout(this.handshakeTimeout);
-    this.socket?.close(1000, 'Client leaving mission'); this.socket = undefined; this.renderer?.destroy(); this.renderer = undefined; this.lastInput = '';
+    this.clearInput(); ++this.generation; window.clearInterval(this.interval);
+    this.connection?.close(); this.connection = undefined; this.renderer?.destroy(); this.renderer = undefined; this.lastInput = '';
   }
   private focusGame() { if (this.inGame && !document.querySelector('dialog[open]')) this.el('arena').focus({ preventScroll: true }); }
   private updateSound() {
