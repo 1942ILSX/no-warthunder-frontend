@@ -6,7 +6,8 @@ import { AudioEngine } from './audio';
 import { drawMinimap, GameRenderer } from './renderer';
 import { InputState } from './input';
 import { normalizePlayerID } from './validation';
-import type { Input, Level, RunResult, ScoreRecord, ServerMessage, State } from './types';
+import { difficultyStorageKey, isDifficulty, multiplierText, resolveDifficulty } from './difficulty';
+import type { Difficulty, DifficultyProfile, RunDifficulty, Input, Level, RunResult, ScoreRecord, ServerMessage, State } from './types';
 import { shell, icon, escapeHTML, languageSelect } from './shell';
 
 const number = (n: number) => new Intl.NumberFormat('en-US').format(n);
@@ -25,6 +26,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = shell;
 class BattleCity {
   private levels: Level[] = [];
   private selected = 1;
+  private difficulties: DifficultyProfile[] = [];
+  private difficulty: Difficulty = 'expert';
   private leaderboardRequest = 0;
   private generation = 0;
   private socket?: WebSocket;
@@ -72,6 +75,7 @@ class BattleCity {
         case 'manual': this.clearInput(); this.el<HTMLDialogElement>('manual-dialog').showModal(); break;
         case 'close-manual': this.el<HTMLDialogElement>('manual-dialog').close(); this.focusGame(); break;
         case 'sound': this.audio.toggle(); this.updateSound(); break;
+        case 'difficulty': if (!this.inGame && isDifficulty(target.dataset.difficulty)) this.selectDifficulty(target.dataset.difficulty); break;
         case 'level': this.select(Number(target.dataset.level)); break;
         case 'deploy': case 'retry': void this.start(); break;
         case 'retry-load': void this.load(); break;
@@ -115,9 +119,17 @@ class BattleCity {
   private async load() {
     this.el('server-status').innerHTML = `<i></i> ${l('header.connecting')}`;
     this.el('server-status').classList.remove('online', 'offline');
+    this.el('difficulty-picker').hidden = true;
     this.el('level-grid').innerHTML = `<div class="loading-placeholder"><span class="spinner"></span> ${l('campaign.loading')}</div>`;
     try {
-      const { levels } = await api.levels();
+      const [{ levels }, settings] = await Promise.all([api.levels(), api.difficulties()]);
+      const profiles = settings.difficulties.filter(profile => isDifficulty(profile.id) && Number.isFinite(profile.scoreMultiplier) && profile.scoreMultiplier > 0);
+      if (!profiles.length) throw new LocalizedError('error.policyUnavailable');
+      this.difficulties = profiles;
+      let saved: string | null = null;
+      try { saved = localStorage.getItem(difficultyStorageKey); } catch { /* Optional preference. */ }
+      this.difficulty = resolveDifficulty(saved, profiles, settings.defaultDifficulty);
+      this.renderDifficulties();
       if (!levels.length) throw new LocalizedError('error.noLevels');
       this.levels = levels;
       this.el('server-status').innerHTML = `<i></i> ${l('header.online')}`; this.el('server-status').classList.add('online');
@@ -127,6 +139,24 @@ class BattleCity {
       this.el('server-status').innerHTML = `<i></i> ${l('header.offline')}`; this.el('server-status').classList.add('offline');
       this.el('level-grid').innerHTML = `<div class="load-error">${icon('target')}<h3>${l('campaign.errorTitle')}</h3><p>${errorMarkup(error)}</p><button class="button secondary" data-action="retry-load">${l('campaign.reconnect')} ${icon('restart')}</button></div>`;
     }
+  }
+  private renderDifficulties() {
+    this.el('difficulty-picker').hidden = false;
+    this.el('difficulty-options').innerHTML = this.difficulties.map(profile => `<button type="button" class="difficulty-option ${profile.id === this.difficulty ? 'selected' : ''}" data-action="difficulty" data-difficulty="${profile.id}" aria-pressed="${profile.id === this.difficulty}"><span class="difficulty-option-heading"><strong>${l(`ai.${profile.id}`)}</strong><span class="score-multiplier">${multiplierText(profile.scoreMultiplier)}</span></span><span class="difficulty-description">${l(`ai.${profile.id}Description`)}</span></button>`).join('');
+  }
+  private selectDifficulty(difficulty: Difficulty) {
+    if (!this.difficulties.some(profile => profile.id === difficulty)) return;
+    this.difficulty = difficulty;
+    document.querySelectorAll<HTMLButtonElement>('[data-action="difficulty"]').forEach(button => {
+      const active = button.dataset.difficulty === difficulty;
+      button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active));
+    });
+    try { localStorage.setItem(difficultyStorageKey, difficulty); } catch { /* Optional preference. */ }
+    this.audio.play('select');
+  }
+  private showRunDifficulty(run: RunDifficulty | DifficultyProfile) {
+    const difficulty = 'difficulty' in run ? run.difficulty : run.id;
+    this.el('game-difficulty').innerHTML = `${l('ai.label')} <strong>${l(`ai.${difficulty}`)}</strong><span class="score-multiplier">${multiplierText(run.scoreMultiplier)}</span>`;
   }
   private renderLevels() {
     this.el('level-grid').innerHTML = this.levels.map(level => `<button class="level-card ${level.id === this.selected ? 'selected' : ''}" data-action="level" data-level="${level.id}" aria-pressed="${level.id === this.selected}" aria-label="${escapeHTML(t('mission.cardLabel', { id: level.id, name: t(levelKey(level.id, 'name')), difficulty: level.difficulty }))}"><span class="level-card-top"><span>${level.id.toString().padStart(2, '0')}</span><span class="difficulty" aria-hidden="true">${Array.from({ length: 5 }, (_, i) => `<i class="${i < level.difficulty ? 'filled' : ''}"></i>`).join('')}</span></span><canvas class="mini-map" data-map="${level.id}" aria-hidden="true"></canvas><span class="level-name">${l(levelKey(level.id, 'name'))}</span><span class="level-subtitle">${l(levelKey(level.id, 'subtitle'))}</span><span class="selected-indicator" aria-hidden="true">${icon('arrow')}</span></button>`).join('');
@@ -138,7 +168,7 @@ class BattleCity {
     const level = this.levels.find(item => item.id === id); if (!level) return;
     this.selected = id;
     document.querySelectorAll<HTMLButtonElement>('.level-card').forEach(card => { const active = Number(card.dataset.level) === id; card.classList.toggle('selected', active); card.setAttribute('aria-pressed', String(active)); });
-    this.el('selected-mission').innerHTML = `<div class="mission-number">${id.toString().padStart(2, '0')}<span>/ 10</span></div><div class="mission-brief"><div class="eyebrow">${l('mission.next')}</div><h3>${l(levelKey(level.id, 'name'))}</h3><p>${l(levelKey(level.id, 'description'))}</p><span class="mission-brief-meta">${l('mission.enemyCount', {count: level.enemyCount})} <span>·</span> ${l(`difficulty.${level.difficulty}` as MessageKey)}</span></div><button class="button primary deploy-button" data-action="deploy">${l('mission.deploy')} ${icon('arrow')}</button>`;
+    this.el('selected-mission').innerHTML = `<div class="mission-number">${id.toString().padStart(2, '0')}<span>/ 10</span></div><div class="mission-brief"><div class="eyebrow">${l('mission.next')}</div><h3>${l(levelKey(level.id, 'name'))}</h3><p>${l(levelKey(level.id, 'description'))}</p><span class="mission-brief-meta">${l('mission.enemyCount', {count: level.enemyCount})} <span>·</span> ${l('mission.threat')} ${l(`difficulty.${level.difficulty}` as MessageKey)}</span></div><button class="button primary deploy-button" data-action="deploy">${l('mission.deploy')} ${icon('arrow')}</button>`;
     this.el('record-level-label').textContent = t('mission.labelName', {id: id.toString().padStart(2, '0'), name: t(levelKey(id, 'name'))});
     if (sound) this.audio.play('select'); void this.loadRecords();
   }
@@ -157,11 +187,13 @@ class BattleCity {
     if (!entries.length) {
       this.el('leaderboard').innerHTML = `<div class="record-empty"><div class="empty-medal">${icon('trophy')}</div><h3>${l('records.emptyTitle')}</h3><p>${l('records.emptyDescription')}</p><div class="empty-lines"><span></span><span></span><span></span></div></div>`; return;
     }
-    this.el('leaderboard').innerHTML = `<table class="record-table"><caption class="sr-only">${l('records.caption')}</caption><thead><tr><th scope="col">#</th><th scope="col">${l('records.playerID')}</th><th scope="col">${l('records.score')}</th><th scope="col">${l('records.time')}</th></tr></thead><tbody>${entries.slice(0, 10).map((record, index) => `<tr class="${index === 0 ? 'first-record' : ''}"><td>${(index + 1).toString().padStart(2, '0')}</td><th scope="row" title="${escapeHTML(record.id)}">${escapeHTML(record.id)}</th><td>${number(record.score)}</td><td>${clock(record.durationMs, true)}</td></tr>`).join('')}</tbody></table>`;
+    this.el('leaderboard').innerHTML = `<table class="record-table"><caption class="sr-only">${l('records.caption')}</caption><thead><tr><th scope="col">#</th><th scope="col">${l('records.playerID')}</th><th scope="col">${l('records.score')}</th><th scope="col">${l('records.time')}</th></tr></thead><tbody>${entries.slice(0, 10).map((record, index) => `<tr class="${index === 0 ? 'first-record' : ''}"><td>${(index + 1).toString().padStart(2, '0')}</td><th scope="row" title="${escapeHTML(record.id)}">${escapeHTML(record.id)}<span class="record-difficulty">${isDifficulty(record.difficulty) ? `${l(`ai.${record.difficulty}`)}${record.scoreMultiplier ? ` <span>${multiplierText(record.scoreMultiplier)}</span>` : ''}` : l('records.legacy')}</span></th><td>${number(record.score)}</td><td>${clock(record.durationMs, true)}</td></tr>`).join('')}</tbody></table>`;
   }
   private async start() {
     const level = this.levels.find(item => item.id === this.selected); if (!level) return;
+    const selectedProfile = this.difficulties.find(profile => profile.id === this.difficulty); if (!selectedProfile) return;
     this.cleanup(); const generation = ++this.generation;
+    this.showRunDifficulty(selectedProfile);
     this.result = undefined; this.state = undefined; this.seq = 0; this.lastBullet = -1; this.inGame = true; this.submitting = false;
     document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog => dialog.close());
     this.el('home-view').hidden = true; this.el('game-view').hidden = false; document.body.classList.add('playing');
@@ -173,8 +205,9 @@ class BattleCity {
     try { this.renderer = new GameRenderer(this.el<HTMLCanvasElement>('arena'), level); } catch (error) { this.connectionError(error); return; }
     window.scrollTo({ top: 0, behavior: 'instant' }); this.audio.unlock();
     try {
-      const room = await api.room(level.id);
+      const room = await api.room(level.id, selectedProfile.id);
       if (generation !== this.generation || !this.inGame) return;
+      this.showRunDifficulty(room);
       const url = new URL(room.wsUrl, location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const socket = new WebSocket(url); this.socket = socket;
       this.handshakeTimeout = window.setTimeout(() => { if (generation === this.generation && !this.state) this.connectionError(new LocalizedError('error.connectionTimeout')); }, 12_000);
@@ -183,6 +216,7 @@ class BattleCity {
         try {
           const message = JSON.parse(event.data) as ServerMessage;
           if (message.type === 'welcome') {
+            this.showRunDifficulty(message);
             window.clearTimeout(this.handshakeTimeout); this.el('arena-loading').hidden = true;
             this.el('game-connection').innerHTML = `<i></i> ${l('game.live')}`; this.el('game-connection').classList.add('online');
             this.acceptState(message.state); this.focusGame(); this.interval = window.setInterval(() => this.sendInput(), 50);
@@ -226,7 +260,7 @@ class BattleCity {
     let rememberedID = ''; try { rememberedID = localStorage.getItem('bcr-player-id') || ''; } catch { /* Optional preference. */ }
     const won = result.status === 'won';
     const description: MessageKey = won ? 'result.winDescription' : this.state?.base.hp === 0 ? 'result.baseLost' : this.state && this.state.lives > 0 ? 'result.timeout' : 'result.livesLost';
-    this.el('result-dialog').innerHTML = `<div class="dialog-language">${languageSelect()}</div><div class="result-emblem ${won ? '' : 'defeat'}">${icon(won ? 'shield' : 'target')}</div><div class="eyebrow">${l('mission.label', {id: result.levelId.toString().padStart(2, '0')})} / ${l(won ? 'game.complete' : 'game.ended')}</div><h2>${l(won ? 'result.winTitle' : 'result.loseTitle')}<span class="accent">${won ? '.' : '?'}</span></h2><p class="result-description">${l(description)}</p><div class="result-stats"><div>${l('result.score')}<strong>${number(result.score)}</strong></div><div>${l('result.time')}<strong>${clock(result.durationMs, true)}</strong></div><div>${l('result.kills')}<strong>${result.kills}</strong></div></div>${won && result.completionToken ? `<form id="record-form" novalidate><label for="player-id">${l('result.mark')}${l('result.optional')}</label><div class="id-input-row"><input id="player-id" name="id" maxlength="128" data-i18n-placeholder="result.idPlaceholder" placeholder="${escapeHTML(t('result.idPlaceholder'))}" autocomplete="nickname" value="${escapeHTML(rememberedID)}" aria-describedby="id-help submission-status" required><button class="button primary" type="submit" id="submit-record">${l('result.submit')} ${icon('arrow')}</button></div><p id="id-help" class="input-help">${l('result.idHelp')}</p><p id="submission-status" class="submission-status" role="status"></p></form>` : ''}<div class="result-actions"><button class="button secondary" data-action="return-home">${l(won ? 'result.skip' : 'game.missionSelect')}</button><button class="text-button" data-action="retry">${icon('restart')} ${l('result.again')}</button></div>`;
+    this.el('result-dialog').innerHTML = `<div class="dialog-language">${languageSelect()}</div><div class="result-emblem ${won ? '' : 'defeat'}">${icon(won ? 'shield' : 'target')}</div><div class="eyebrow">${l('mission.label', {id: result.levelId.toString().padStart(2, '0')})} / ${l(won ? 'game.complete' : 'game.ended')}</div><h2>${l(won ? 'result.winTitle' : 'result.loseTitle')}<span class="accent">${won ? '.' : '?'}</span></h2><p class="result-description">${l(description)}</p><div class="result-difficulty">${l('ai.label')} <strong>${l(`ai.${result.difficulty}`)}</strong><span class="score-multiplier">${multiplierText(result.scoreMultiplier)}</span></div><div class="result-stats"><div>${l('result.score')}<strong>${number(result.score)}</strong></div><div>${l('result.time')}<strong>${clock(result.durationMs, true)}</strong></div><div>${l('result.kills')}<strong>${result.kills}</strong></div></div><p class="score-breakdown">${l('result.scoreBreakdown', {baseScore: number(result.baseScore), multiplier: result.scoreMultiplier.toFixed(1), score: number(result.score)})}<small>${l('result.scoreRounding')}</small></p>${won && result.completionToken ? `<form id="record-form" novalidate><label for="player-id">${l('result.mark')}${l('result.optional')}</label><div class="id-input-row"><input id="player-id" name="id" maxlength="128" data-i18n-placeholder="result.idPlaceholder" placeholder="${escapeHTML(t('result.idPlaceholder'))}" autocomplete="nickname" value="${escapeHTML(rememberedID)}" aria-describedby="id-help submission-status" required><button class="button primary" type="submit" id="submit-record">${l('result.submit')} ${icon('arrow')}</button></div><p id="id-help" class="input-help">${l('result.idHelp')}</p><p id="submission-status" class="submission-status" role="status"></p></form>` : ''}<div class="result-actions"><button class="button secondary" data-action="return-home">${l(won ? 'result.skip' : 'game.missionSelect')}</button><button class="text-button" data-action="retry">${icon('restart')} ${l('result.again')}</button></div>`;
     this.refreshLocale();
     document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog => dialog.close()); this.el<HTMLDialogElement>('result-dialog').showModal();
   }

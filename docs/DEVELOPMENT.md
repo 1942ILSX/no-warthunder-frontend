@@ -4,10 +4,10 @@ Ten original missions, a Go-authoritative tank game, and an opt-in top-ten board
 
 ## Run locally
 
-Use Node.js 22.12+ or a current maintained release. Start the Go backend on `127.0.0.1:8080`, then:
+Use Node.js 24+ for Vite and native TypeScript tests. Start the Go backend on `127.0.0.1:8080`, then:
 
 ```sh
-npm install
+npm ci
 npm run dev
 ```
 
@@ -33,15 +33,38 @@ Inputs are cleared when the window loses focus. There is no pause: the mission a
 
 ## Architecture
 
-- `src/index.ts`: room connection lifecycle, keyboard/touch input, mission selection, leaderboard, and results.
-- `src/types.ts`: JSON protocol v1 types. The canonical backend contract is `docs/PROTOCOL.md` in BattleCityReforge.
+- `src/index.ts`: room connection lifecycle, keyboard/touch input, mission and difficulty selection, leaderboard, and results.
+- `src/types.ts`: JSON protocol v2 types. The canonical backend contract is `docs/PROTOCOL.md` in the backend repository.
+- `src/difficulty.ts`: validated difficulty preferences and multiplier display formatting. It never calculates authoritative scores.
 - `src/renderer.ts`: terrain/tank artwork, entity interpolation and bounded local-player visual extrapolation. The Go server owns positions, collisions, damage, score and outcomes. Visual extrapolation resets at each snapshot and is limited to 80 ms; it is not authoritative rollback prediction.
 - `src/audio.ts`: small Web Audio synthesizer; no third-party samples.
 - `src/shell.ts` / `styles.css`: responsive UI, keyboard-accessible dialogs and reduced-motion support.
 
-No RL model is bundled in the browser. The backend policy slot is responsible for enemy decisions. The browser sends only sequenced direction/fire inputs. On victory it submits a server-issued single-use completion token and chosen display ID; client-supplied scores are never sent.
+No RL model is bundled in the browser. The backend loads the three qualified model artifacts once and performs enemy inference in Go. The browser sends only sequenced direction/fire inputs during play. On victory it submits a server-issued single-use completion token and chosen display ID; client-supplied scores are never sent.
 
-Player IDs are escaped before rendering. Only the optional last-used display ID, sound preference and language preference are stored in localStorage. Scores remain server-owned. Empty leaderboards remain empty; no placeholder records are fabricated.
+Player IDs are escaped before rendering. Only the optional last-used display ID, sound, language, and difficulty preferences are stored in localStorage. Scores remain server-owned. Empty leaderboards remain empty; no placeholder records are fabricated.
+
+## Difficulty and score contract
+
+The main page fetches `/api/difficulties` alongside `/api/levels`. The backend
+offers Trainee ×1.0, Expert ×1.5 (default), and Ace ×2.0. A saved `nwt-difficulty`
+preference is used only if that tier still appears in the backend catalog.
+The selector describes AI difficulty separately from the level's fixed threat
+rating.
+
+Room creation sends `{levelId, difficulty}`. The room response, WebSocket
+welcome, and final result include the locked `difficulty`, `scoreMultiplier`,
+and `policyVersion`. Changing difficulty requires returning to the main page
+and starting another room; retries keep the selected tier.
+
+Snapshot and result `score` fields are already weighted by the backend. The
+client must not multiply them again. `baseScore` is supplied separately for the
+result breakdown. Fractional points round down. The multiplier includes the
+victory bonus as well as combat score.
+
+Every level has one top-ten board across all difficulties, ranked by final
+score then duration. New records include difficulty metadata. Older records
+without it display a Legacy label and retain their original scores.
 
 All terrain, tank drawings, icons and level mini-maps are rendered from local code and backend metadata. Barlow, Barlow Condensed and IBM Plex Mono Latin font subsets are bundled locally through Fontsource; the production client makes no third-party runtime font request. System fallbacks cover other scripts. Font licenses are included with their Fontsource packages.
 

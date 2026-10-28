@@ -1,4 +1,8 @@
-/** Wire contract v1. Scores, elapsed time, collisions and outcomes belong to Go. */
+/** Wire contract v2. Scores, elapsed time, collisions and outcomes belong to Go. */
+export type Difficulty = 'trainee' | 'expert' | 'ace';
+export type DifficultyProfile = { id: Difficulty; scoreMultiplier: number };
+export type RunDifficulty = { difficulty: Difficulty; scoreMultiplier: number; policyVersion: string };
+export type RoomReservation = RunDifficulty & { roomId: string; token: string; wsUrl: string };
 export type Point = { x: number; y: number };
 export type Level = {
   id: number; name: string; subtitle: string; description: string;
@@ -16,16 +20,20 @@ export type State = {
   tick: number; timeMs: number; status: 'playing' | 'won' | 'lost';
   grid: string[]; player: Tank; enemies: Tank[]; bullets: Bullet[]; effects: Effect[];
   base: Point & { hp: number; maxHp: number };
-  score: number; kills: number; totalEnemies: number; enemiesRemaining: number;
+  score: number; baseScore: number; kills: number; totalEnemies: number; enemiesRemaining: number;
   lives: number; lastInputSeq: number;
 };
-export type RunResult = {
-  status: 'won' | 'lost'; levelId: number; score: number; durationMs: number;
+export type RunResult = RunDifficulty & {
+  status: 'won' | 'lost'; levelId: number; score: number; baseScore: number; durationMs: number;
   kills: number; completionToken?: string;
 };
-export type ScoreRecord = { id: string; score: number; durationMs: number; completedAt: string };
+export type ScoreRecord = {
+  id: string; score: number; durationMs: number; completedAt: string;
+  // Older scripted runs have no difficulty metadata; never imply a trained tier.
+  difficulty?: Difficulty; scoreMultiplier?: number; baseScore?: number;
+};
 export type ServerMessage =
-  | { type: 'welcome'; roomId: string; level: Level; state: State }
+  | (RunDifficulty & { type: 'welcome'; roomId: string; level: Level; state: State })
   | { type: 'state'; state: State }
   | { type: 'finished'; result: RunResult }
   | { type: 'error'; error: string };

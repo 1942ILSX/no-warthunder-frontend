@@ -1,4 +1,4 @@
-import type { Level, ScoreRecord } from './types';
+import type { Difficulty, DifficultyProfile, Level, RoomReservation, ScoreRecord } from './types';
 import { t } from './i18n.ts';
 import type { MessageKey, Params } from './i18n.ts';
 
@@ -12,6 +12,7 @@ export class LocalizedError extends Error {
 }
 
 const errorCodes: Record<string, MessageKey> = {
+  invalid_difficulty: 'error.invalidDifficulty', policy_unavailable: 'error.policyUnavailable',
   not_found: 'error.notFound', origin_not_allowed: 'error.origin', invalid_level: 'error.invalidLevel',
   room_creation_failed: 'error.unavailable', server_unavailable: 'error.unavailable', rooms_full: 'error.capacity',
   run_capacity_full: 'error.capacity', room_expired: 'error.roomMissing', room_in_use: 'error.roomConnected',
@@ -58,10 +59,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  difficulties: () => request<{ defaultDifficulty: Difficulty; difficulties: DifficultyProfile[] }>('/api/difficulties'),
   levels: () => request<{ levels: Level[] }>('/api/levels'),
   leaderboard: (levelId: number) => request<{ levelId: number; entries: ScoreRecord[] }>(`/api/leaderboard?levelId=${levelId}`),
-  room: (levelId: number) => request<{ roomId: string; token: string; wsUrl: string }>('/api/rooms', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ levelId }),
+  room: (levelId: number, difficulty: Difficulty) => request<RoomReservation>('/api/rooms', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ levelId, difficulty }),
   }),
   submit: (completionToken: string, id: string) => request<{ rank: number | null; recorded: boolean; entries: ScoreRecord[] }>('/api/leaderboard', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completionToken, id }),
